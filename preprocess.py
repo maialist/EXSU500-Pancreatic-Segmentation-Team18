@@ -9,7 +9,8 @@ Pipeline per case:
   4. Save as compressed .npz (float16 image, uint8 label) in the output folder
 
 Also writes a patient-level train/val/test split (splits.json) so that all three
-models (SVM, random forest, 3D UNet) are evaluated on identical cases.
+models (logistic regression, random forest, 3D UNet) are evaluated on identical
+cases.
 
 Usage:
   python preprocess.py --raw "/path/to/EXSU500_PancreasSeg_raw_data" --out data/processed

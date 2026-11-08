@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-MODELS = ("svm", "random_forest", "unet3d")
+MODELS = ("logistic_regression", "random_forest", "unet3d")
 SPLITS = ("train", "val", "test")
 # Pancreas = label 1 only; tumour = label 2; "pancreas_total" = labels 1 and 2 merged.
 STRUCTURES = {

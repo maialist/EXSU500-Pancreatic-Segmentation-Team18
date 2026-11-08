@@ -20,7 +20,7 @@ The intended use of the model is **research**. It is not intended for clinical d
 
 ### Task Description
 
-The models take **CT** medical images as input and predict background (label 0), pancreas (label 1), and pancreatic tumour (label 2) at the voxel level. The SVM also supports a tumour-versus-rest binary target.
+The models take **CT** medical images as input and predict background (label 0), pancreas (label 1), and pancreatic tumour (label 2) at the voxel level. The classical models and 3D U-Net also support a tumour-versus-rest binary target.
 
 ---
 
@@ -54,48 +54,48 @@ The virtual environment itself is excluded by `.gitignore`; share the requiremen
 
 ---
 
-## Support vector machine baseline
+## Logistic regression baseline
 
-The voxel-wise SVM uses the shared patient-level `train`/`val`/`test` split and the preprocessed arrays. It learns from a 3x3x3 neighbourhood of normalized CT intensities and predicts each volume in batches. The default is a linear SVM: it is considerably more practical for millions of voxels than a kernel SVM while still providing a classical SVM baseline.
+The voxel-wise logistic-regression baseline uses the shared patient-level `train`/`val`/`test` split and preprocessed arrays. Each voxel is represented by its edge-padded 3x3x3 neighbourhood of normalized CT intensities (27 features), and each volume is predicted in batches. It supports three-class segmentation and tumour-versus-rest prediction.
 
-Install scikit-learn in the same environment as the preprocessing dependencies, then run:
-
-```bash
-python svm.py train
-python svm.py predict --split val
-```
-
-Training saves `data/models/svm.joblib`. Predictions are written and mean per-case Dice is reported for the selected labelled split (cases with neither reference nor predicted voxels for a class are excluded from that class's mean). Use validation predictions for model selection; after choices are fixed, evaluate the test split once:
+Run training and validation prediction from the repository root:
 
 ```bash
-python svm.py predict --split test
+python models/logistic_regression.py train
+python models/logistic_regression.py predict --split val
 ```
 
-Train a binary tumour-versus-rest model with `python svm.py train --target tumour`. The binary prediction is saved using the original label values (0 background/non-tumour, 2 tumour).
+Training saves `data/models/logistic_regression.joblib`. Predictions are written to `data/predictions/logistic_regression/`; mean per-case Dice is reported for the selected labelled split, excluding cases where both the reference and prediction are empty for a class. Use validation predictions for model selection; after choices are fixed, evaluate the test split once:
 
-### Fixed comparison protocol and adjustable SVM choices
+```bash
+python models/logistic_regression.py predict --split test
+```
 
-The following are fixed for a fair comparison with the other project models: source data and label definitions; patient-level split from `data/processed/splits.json`; preprocessing (RAS orientation, 1.5 x 1.5 x 2.5 mm spacing, -100 to 240 HU window, and [0, 1] intensity scaling); and using validation data for tuning and test data only for final evaluation. Do not change preprocessing or the split for the SVM alone.
+Train a binary tumour-versus-rest model with `python models/logistic_regression.py train --target tumour`. Its saved predictions use the original label values (0 for background/non-tumour and 2 for tumour).
 
-The implementation fixes the linear kernel, 3x3x3 edge-padded intensity features, balanced class weights, squared-hinge loss, and a 5,000-iteration limit. Each training run can change `--target`, `--c`, `--samples-per-class`, `--samples-per-class-per-case`, and `--seed`. `--data`, `--splits`, and `--model` choose the input and output paths; prediction additionally requires `--split` (`val` or `test`) and allows `--batch-size` and `--out` to be changed. All training choices are stored in the model artifact.
+### Fixed comparison protocol and logistic-regression settings
 
-Recommended starting point for this project: keep the shared preprocessing and patient split unchanged; use the default three-class target to match the project goal; start with `C=1`, at most 250 samples per class per training patient and 10,000 per class overall, seed 42. If the project question is specifically tumour detection, choose `--target tumour` and report tumour Dice. If tuning `C` or sampling limits, compare candidates on validation data only and record the selected settings before running the test set. These are reproducible baseline recommendations, not universal or clinically validated SVM standards. The dataset labels are reference annotations for this research benchmark, not an independent clinical gold standard. This project remains research-only and is not for clinical decision-making.
+The source data, label definitions, patient-level split (`data/processed/splits.json`), preprocessing (RAS orientation, 1.5 x 1.5 x 2.5 mm spacing, -100 to 240 HU window, and [0, 1] intensity scaling), and validation/test protocol are shared across models. Do not change preprocessing or the split for this baseline alone.
+
+The starting model uses L2 regularization (`l1_ratio=0.0`), `solver="lbfgs"`, `C=1.0`, `max_iter=500`, balanced class weights, and seed 42. Training samples at most 250 voxels per class per training patient and 10,000 per class overall, with equal class sample counts when each class has enough voxels. Intensities already share the same [0, 1] scale, so no additional feature scaler is applied. These are reproducible starting settings, not tuned or clinically validated recommendations.
+
+You can change `--target`, `--c`, `--max-iter`, `--samples-per-class`, `--samples-per-class-per-case`, and `--seed`. `--data`, `--splits`, and `--model` select input, split, and model artifact paths; prediction additionally requires `--split train|val|test` and accepts `--batch-size` and `--out`. Training settings and training case names are saved in the model artifact. Tune on validation data and reserve test data for the final evaluation.
 
 ## Random forest
 
-The voxel-wise random forest uses the same preprocessed volumes and shared patient-level split as the SVM. It extracts the same edge-padded 3x3x3 normalized CT intensity neighbourhood (27 features) and samples a balanced number of voxels from the training patients. It supports both three-class pancreas/tumour segmentation and tumour-versus-rest prediction.
+The voxel-wise random forest uses the same preprocessed volumes and shared patient-level split as logistic regression. It extracts the same edge-padded 3x3x3 normalized CT intensity neighbourhood (27 features) and samples a balanced number of voxels from the training patients. It supports both three-class pancreas/tumour segmentation and tumour-versus-rest prediction.
 
 Install scikit-learn and joblib in the same environment as the preprocessing dependencies, then run:
 
 ```bash
-python random_forest.py train
-python random_forest.py predict --split val
+python models/random_forest.py train
+python models/random_forest.py predict --split val
 ```
 
-Training saves `data/models/random_forest.joblib`; predictions and mean per-case Dice are written for labelled validation or test cases, using the same Dice convention as the SVM. The default model is three-class. Use validation predictions to select settings, then evaluate the test split once after choices are fixed:
+Training saves `data/models/random_forest.joblib`; predictions and mean per-case Dice are written for labelled validation or test cases, using the same Dice convention as logistic regression. The default model is three-class. Use validation predictions to select settings, then evaluate the test split once after choices are fixed:
 
 ```bash
-python random_forest.py predict --split test
+python models/random_forest.py predict --split test
 ```
 
 The project baseline sets `n_estimators=200` (number of trees), `max_depth=20` (limits tree complexity), `min_samples_leaf=2` (discourages leaves based on a single voxel), and `max_features="sqrt"` (each split considers the square root of the 27 input features). It uses `class_weight="balanced_subsample"` to account for class imbalance within each bootstrap sample, `n_jobs=-1` to train trees in parallel, and seed 42 for reproducibility. Training samples at most 250 voxels per class per patient and 10,000 per class overall, making the three classes equally represented in the fit data. These are starting settings for this dataset and runtime, not clinically validated or guaranteed optimal settings.
@@ -103,8 +103,8 @@ The project baseline sets `n_estimators=200` (number of trees), `max_depth=20` (
 You can change the target, tree count, depth, minimum leaf size, feature subset, sample caps, and seed with `--target`, `--n-estimators`, `--max-depth`, `--min-samples-leaf`, `--max-features`, `--samples-per-class`, `--samples-per-class-per-case`, and `--seed`. `--max-features` accepts `sqrt`, `log2`, or `all` (all 27 features). For example:
 
 ```bash
-python random_forest.py train --n-estimators 300 --max-depth 24 --min-samples-leaf 3
-python random_forest.py train --target tumour
+python models/random_forest.py train --n-estimators 300 --max-depth 24 --min-samples-leaf 3
+python models/random_forest.py train --target tumour
 ```
 
 The exact model and sampling settings are stored in the model artifact. Keep preprocessing and the split unchanged for comparison; tune on validation data only and record selected settings before the single test evaluation.

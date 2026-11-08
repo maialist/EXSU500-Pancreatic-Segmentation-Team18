@@ -19,7 +19,7 @@ import pandas as pd
 
 SPLIT_ORDER = ["train", "val", "test"]
 STRUCTURE_ORDER = ["pancreas", "tumour", "pancreas_total"]
-MODEL_ORDER = ["svm", "random_forest", "unet3d"]
+MODEL_ORDER = ["logistic_regression", "random_forest", "unet3d"]
 
 
 def _order(values, preferred):

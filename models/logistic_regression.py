@@ -1,4 +1,4 @@
-"""Train and run a voxel-wise SVM baseline for pancreas CT segmentation."""
+"""Train and run voxel-wise logistic regression for pancreas CT segmentation."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.svm import LinearSVC
+from sklearn.linear_model import LogisticRegression
 
 CLASS_IDS = (0, 1, 2)
 CLASS_NAMES = {0: "background", 1: "pancreas", 2: "tumour"}
@@ -18,7 +18,7 @@ NEIGHBOUR_OFFSETS = tuple(
     for dz in (-1, 0, 1)
 )
 DEFAULT_DATA_DIR = Path("data/processed")
-DEFAULT_MODEL_PATH = Path("data/models/svm.joblib")
+DEFAULT_MODEL_PATH = Path("data/models/logistic_regression.joblib")
 
 
 def target_labels(label: np.ndarray, target: str) -> np.ndarray:
@@ -73,6 +73,8 @@ def _sample_training_data(
         with np.load(case_path) as case:
             image = case["image"].astype(np.float32, copy=False)
             labels = target_labels(case["label"], target)
+        if image.ndim != 3 or labels.ndim != 3:
+            raise ValueError(f"Expected a 3D image and label for {case_name}")
         if image.shape != labels.shape:
             raise ValueError(
                 f"Image and label shapes differ for {case_name}: "
@@ -126,7 +128,7 @@ def _load_splits(path: Path) -> dict[str, list[str]]:
 
 
 def _predict_volume(
-    classifier: LinearSVC, image: np.ndarray, batch_size: int
+    classifier: LogisticRegression, image: np.ndarray, batch_size: int
 ) -> np.ndarray:
     prediction = np.empty(image.shape, dtype=np.uint8)
     flat_prediction = prediction.ravel()
@@ -149,12 +151,12 @@ def train(args: argparse.Namespace) -> None:
         args.samples_per_class_per_case,
         args.seed,
     )
-    classifier = LinearSVC(
+    classifier = LogisticRegression(
         C=args.c,
+        l1_ratio=0.0,
+        solver="lbfgs",
+        max_iter=args.max_iter,
         class_weight="balanced",
-        dual=False,
-        loss="squared_hinge",
-        max_iter=5000,
         random_state=args.seed,
     )
     classifier.fit(features, labels)
@@ -166,7 +168,12 @@ def train(args: argparse.Namespace) -> None:
             "target": args.target,
             "class_ids": (0, 1) if args.target == "tumour" else CLASS_IDS,
             "config": {
-                "c": args.c,
+                "C": args.c,
+                "l1_ratio": 0.0,
+                "penalty": "l2",
+                "solver": "lbfgs",
+                "max_iter": args.max_iter,
+                "class_weight": "balanced",
                 "samples_per_class": args.samples_per_class,
                 "samples_per_class_per_case": args.samples_per_class_per_case,
                 "seed": args.seed,
@@ -189,7 +196,7 @@ def train(args: argparse.Namespace) -> None:
 def predict(args: argparse.Namespace) -> None:
     splits = _load_splits(args.splits)
     artifact = joblib.load(args.model)
-    classifier: LinearSVC = artifact["classifier"]
+    classifier: LogisticRegression = artifact["classifier"]
     target = artifact["target"]
     class_ids = tuple(artifact["class_ids"])
     args.out.mkdir(parents=True, exist_ok=True)
@@ -206,6 +213,8 @@ def predict(args: argparse.Namespace) -> None:
         with np.load(case_path) as case:
             image = case["image"].astype(np.float32, copy=False)
             truth = target_labels(case["label"], target)
+        if image.ndim != 3 or truth.ndim != 3:
+            raise ValueError(f"Expected a 3D image and label for {case_name}")
         if image.shape != truth.shape:
             raise ValueError(
                 f"Image and label shapes differ for {case_name}: "
@@ -244,7 +253,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
-    train_parser = commands.add_parser("train", help="fit and save the SVM model")
+    train_parser = commands.add_parser(
+        "train", help="fit and save the logistic-regression model"
+    )
     train_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
     train_parser.add_argument("--splits", type=Path, default=DEFAULT_DATA_DIR / "splits.json")
     train_parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
@@ -255,6 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="segment background/pancreas/tumour or tumour versus everything else",
     )
     train_parser.add_argument("--c", type=float, default=1.0)
+    train_parser.add_argument("--max-iter", type=int, default=500)
     train_parser.add_argument("--samples-per-class", type=int, default=10_000)
     train_parser.add_argument("--samples-per-class-per-case", type=int, default=250)
     train_parser.add_argument("--seed", type=int, default=42)
@@ -267,7 +279,9 @@ def build_parser() -> argparse.ArgumentParser:
     predict_parser.add_argument("--splits", type=Path, default=DEFAULT_DATA_DIR / "splits.json")
     predict_parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
     predict_parser.add_argument("--split", choices=("train", "val", "test"), required=True)
-    predict_parser.add_argument("--out", type=Path, default=Path("data/predictions/svm"))
+    predict_parser.add_argument(
+        "--out", type=Path, default=Path("data/predictions/logistic_regression")
+    )
     predict_parser.add_argument("--batch-size", type=int, default=100_000)
     predict_parser.set_defaults(func=predict)
     return parser
@@ -276,8 +290,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     if args.command == "train":
-        if args.c <= 0:
-            raise ValueError("--c must be positive")
+        if not np.isfinite(args.c) or args.c <= 0 or args.max_iter <= 0:
+            raise ValueError("--c and --max-iter must be positive")
         if args.samples_per_class <= 0 or args.samples_per_class_per_case <= 0:
             raise ValueError("Sample limits must be positive")
     elif args.batch_size <= 0:
