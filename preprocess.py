@@ -28,7 +28,7 @@ DEFAULT_RAW = Path.home() / "Downloads/McGill/Master's/EXSU 500/EXSU500_Pancreas
 HU_MIN, HU_MAX = -100.0, 240.0  # soft-tissue window
 TARGET_SPACING = (1.5, 1.5, 2.5)  # mm, RAS axes
 
-
+# Reorients NIfTI image to nearest RAS+ orientation to obtain NumPy array and spacing. Returns (array, spacing).
 def load_ras(path):
     """Load a NIfTI file reoriented to RAS+; returns (array, spacing)."""
     img = nib.as_closest_canonical(nib.load(str(path)))
