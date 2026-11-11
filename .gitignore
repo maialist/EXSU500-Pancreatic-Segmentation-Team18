@@ -7,6 +7,9 @@ data/
 *.npz
 *.npy
 
+data_stats/
+*.csv
+
 __pycache__/
 .ipynb_checkpoints/
 .venv/
