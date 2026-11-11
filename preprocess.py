@@ -12,6 +12,15 @@ Also writes a patient-level train/val/test split (splits.json) so that all three
 models (logistic regression, random forest, 3D UNet) are evaluated on identical
 cases.
 
+Inputs:
+    Task07_raw_data/  - Task07 raw data directory from the Medical Segmentation Decathlon (MSD)
+
+Outputs:
+    data/
+        processed/
+            case_00000.npz - all processed cases (image + label)
+            splits.json - train/val/test split of cases for reproducibility
+
 Usage:
   python preprocess.py --raw "/path/to/EXSU500_PancreasSeg_raw_data" --out data/processed
 """
