@@ -20,7 +20,7 @@ DEFAULT_CHECKPOINT_PATH = Path("data/models/unet3d_training.pt") # default for c
 DEFAULT_PATCH_SIZE = (64, 64, 32)
 NUM_DOWNSAMPLINGS = 3
 
-## new - save checkpoints every epoch
+## Save training checkpoints every epoch (new)
 def save_training_checkpoint(
     path: Path,
     model: torch.nn.Module,
@@ -54,8 +54,9 @@ def save_training_checkpoint(
     temp_path.replace(path)
 
     print(f"Saved training checkpoint at epoch {epoch}", flush=True)
-##
+## new ends
 
+# Return labels for multiclass segmentation or tumour-vs-rest.
 def target_labels(label: np.ndarray, target: str) -> np.ndarray:
     """Return labels for multiclass segmentation or tumour-vs-rest."""
     if target == "multiclass":
@@ -64,7 +65,7 @@ def target_labels(label: np.ndarray, target: str) -> np.ndarray:
         return (label == 2).astype(np.uint8)
     raise ValueError(f"Unsupported target: {target}")
 
-
+# Load the train/val/test splits from a JSON file and validate their structure
 def _load_splits(path: Path) -> dict[str, list[str]]:
     with path.open(encoding="utf-8") as split_file:
         splits = json.load(split_file)
@@ -80,7 +81,7 @@ def _load_splits(path: Path) -> dict[str, list[str]]:
         raise ValueError("Patient cases overlap between train, validation, and test")
     return splits
 
-
+# Load a single case's image and label from a .npz file, ensuring the data is valid
 def _load_case(
     data_dir: Path, case_name: str, target: str
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -101,7 +102,7 @@ def _load_case(
         raise ValueError(f"Unexpected label value in processed case {case_name}")
     return image, target_labels(raw_label, target)
 
-
+# Pad the image and label to at least as large as the patch size 
 def _pad_case(
     image: np.ndarray, label: np.ndarray, patch_size: tuple[int, int, int]
 ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int]]:
@@ -118,7 +119,7 @@ def _pad_case(
         label = np.pad(label, pad_width, mode="constant")
     return image, label, (low_pad_d, low_pad_h, low_pad_w)
 
-
+# Sample a patch from the image and label, with a probability of sampling from foreground classes
 def _sample_patch(
     image: np.ndarray,
     label: np.ndarray,
@@ -141,11 +142,11 @@ def _sample_patch(
     slices = tuple(slice(int(begin), int(begin + size)) for begin, size in zip(start, patch_size))
     return image[slices], label[slices]
 
-
+# Compute the number of groups based on the number of channels
 def _group_count(channels: int) -> int:
     return next(groups for groups in range(min(8, channels), 0, -1) if channels % groups == 0)
 
-
+# Define a convolutional block for the 3D U-Net architecture
 class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int) -> None:
         super().__init__()
@@ -162,7 +163,7 @@ class ConvBlock(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.layers(inputs)
 
-
+# Define the 3D U-Net architecture for volumetric segmentation
 class UNet3D(nn.Module):
     def __init__(self, out_channels: int = 3, base_channels: int = 16) -> None:
         super().__init__()
@@ -202,7 +203,7 @@ class UNet3D(nn.Module):
             : original_size[2],
         ]
 
-
+# Compute the dice loss for a batch of logits and labels
 def _dice_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     probabilities = torch.softmax(logits, dim=1)
     one_hot = F.one_hot(labels, num_classes=logits.shape[1]).movedim(-1, 1)
@@ -213,7 +214,7 @@ def _dice_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     dice = (2 * intersection + 1.0) / (denominator + 1.0)
     return 1.0 - dice.mean()
 
-
+# Resolve the device to use for training or inference based on the provided name
 def _resolve_device(name: str) -> torch.device:
     if name == "auto":
         if torch.cuda.is_available():
@@ -227,7 +228,7 @@ def _resolve_device(name: str) -> torch.device:
         raise RuntimeError("MPS was requested but is not available")
     return torch.device(name)
 
-
+# Compute the starting indices for sliding window patches along a single dimension
 def _sliding_starts(size: int, patch: int, overlap: float) -> list[int]:
     if size <= patch:
         return [0]
@@ -237,7 +238,7 @@ def _sliding_starts(size: int, patch: int, overlap: float) -> list[int]:
         starts.append(size - patch)
     return starts
 
-
+# Predict the segmentation for a single 3D volume using a sliding window approach
 def _predict_volume(
     model: UNet3D,
     image: np.ndarray,
@@ -289,7 +290,7 @@ def _predict_volume(
     prediction = probability_sum[:, d0:d1, h0:h1, w0:w1].argmax(axis=0).astype(np.uint8)
     return prediction
 
-
+# Compute the dice score for each class of a single case
 def _score_case(
     truth: np.ndarray, prediction: np.ndarray, target: str
 ) -> dict[int, float | None]:
@@ -308,7 +309,7 @@ def _score_case(
         )
     return scores
 
-
+# Compute the mean dice score across all classes, ignoring background
 def _mean_foreground_dice(
     totals: dict[int, dict[str, float | int]]
 ) -> float:
@@ -365,60 +366,70 @@ def _validate(
                 totals[class_id]["case_count"] += 1
     return _mean_foreground_dice(totals), totals
 
-
+# Print the mean dice scores for each class
 def _print_dice(totals: dict[int, dict[str, float | int]], target: str) -> None:
     for class_id, values in totals.items():
         name = "tumour" if target == "tumour" else CLASS_NAMES[class_id]
         score = (
             0.0
             if not values["case_count"]
+            # compute the mean dice score for the class across all cases
             else float(values["dice_sum"]) / int(values["case_count"])
         )
         print(f"  {name}: {score:.4f} ({values['case_count']} cases)")
 
 
 def train(args: argparse.Namespace) -> None:
-    splits = _load_splits(args.splits)
-    device = _resolve_device(args.device)
-    rng = np.random.default_rng(args.seed)
-    torch.manual_seed(args.seed)
+    splits = _load_splits(args.splits) # load train/val/test splits    
+    device = _resolve_device(args.device) # specify device to run on (cpu, cuda, mps)
+    rng = np.random.default_rng(args.seed) # set random seed for Numpy
+    torch.manual_seed(args.seed) # set random seed for PyTorch
+    # set random seed for CUDA devices if used
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed_all(args.seed) 
 
-    target = args.target
+    # specify target segmentation type (tumour or multiclass)
+    target = args.target 
     num_classes = 2 if target == "tumour" else 3
-    ## new - save checkpoints every epoch
+    
+    ## save checkpoints every epoch (new)
+    # define model
     model = UNet3D(out_channels=num_classes, base_channels=args.base_channels).to(device)
-
+    # define optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
 
-    # Initialize training state
+    # initialize training state
     best_dice = -1.0
     start_epoch = 1
 
+    # create the parent directory for the model if it doesn't exist
     args.model.parent.mkdir(parents=True, exist_ok=True)
 
-    # Resume from previous training checkpoint if requested
+    # resume from previous training checkpoint if requested
     if args.resume:
         print(f"Loading training checkpoint: {args.checkpoint}")
-
+        
+        # get previous training state from checkpoint
         checkpoint = torch.load(
             args.checkpoint,
             map_location=device,
             weights_only=False,
         )
 
+        # get model config from checkpoint 
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
+        # define the starting epoch
         start_epoch = checkpoint["epoch"] + 1
+        # get best dice score from checkpoint
         best_dice = checkpoint["best_dice"]
 
+        # set the random number generator states for Numpy, PyTorch, and CUDA (if available) from checkpoint
         rng.bit_generator.state = checkpoint["numpy_rng_state"]
         torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
-
         if (
             torch.cuda.is_available()
             and checkpoint["cuda_rng_state"] is not None
@@ -427,16 +438,20 @@ def train(args: argparse.Namespace) -> None:
 
         print(f"Resuming from epoch {start_epoch}")
 
-    # Begin training
+    # Begin training from specfied starting epoch to total epochs
     for epoch in range(start_epoch, args.epochs + 1):
-    ##new ends
+    ##(new ends)
         model.train()
-        case_names = list(splits["train"])
+        # specify training data
+        case_names = list(splits["train"]) 
+        # shuffle training cases for each epoch 
         rng.shuffle(case_names)
+        # initialize lists to hold patches, labels, and losses for the current batch
         patch_batch: list[np.ndarray] = []
         label_batch: list[np.ndarray] = []
         losses: list[float] = []
 
+        # function to update the model with the current batch of patches and labels
         def update_model() -> None:
             inputs = torch.from_numpy(np.stack(patch_batch)[:, None]).to(device=device)
             labels = torch.from_numpy(np.stack(label_batch).astype(np.int64)).to(device=device)
@@ -450,6 +465,7 @@ def train(args: argparse.Namespace) -> None:
             patch_batch.clear()
             label_batch.clear()
 
+        # iterate over each training case and sample patches for training
         for case_index, case_name in enumerate(case_names, start=1):
             if args.verbose:
                 print(
@@ -458,6 +474,7 @@ def train(args: argparse.Namespace) -> None:
                     flush=True,
                 )
 
+            # load the image and label for the current case
             image, label = _load_case(args.data, case_name, target)
 
             if args.verbose:
@@ -466,11 +483,13 @@ def train(args: argparse.Namespace) -> None:
                     flush=True,
                 )
 
+            # compute coordinates of foreground voxels for each class in the label
             foreground_coordinates = {
                 int(class_id): np.argwhere(label == class_id)
                 for class_id in np.unique(label)
                 if class_id != 0
             }
+            # sample patches from the current case for training
             for _ in range(args.patches_per_case):
                 patch, label_patch = _sample_patch(
                     image,
@@ -484,11 +503,15 @@ def train(args: argparse.Namespace) -> None:
                 label_batch.append(label_patch)
                 if len(patch_batch) == args.batch_size:
                     update_model()
+        # update the model with any remaining patches in the batch after processing all cases
         if patch_batch:
             update_model()
 
+        # compute mean loss for the current epoch
         mean_loss = float(np.mean(losses))
         print(f"Epoch {epoch}/{args.epochs} - loss: {mean_loss:.4f}")
+
+        # validate the model at specified interval or specified epoch
         if epoch % args.validation_every == 0 or epoch == args.epochs:
             validation_dice, totals = _validate(
                 model, splits["val"], args, target, device
@@ -534,19 +557,28 @@ def train(args: argparse.Namespace) -> None:
         ##new ends
 
 def predict(args: argparse.Namespace) -> None:
-    splits = _load_splits(args.splits)
-    device = _resolve_device(args.device)
+    # get train, val, test splits 
+    splits = _load_splits(args.splits) 
+    # get device to run on (cpu, cuda, mps)
+    device = _resolve_device(args.device) 
+    # load the checkpoint with the model state dict and config
     checkpoint: dict[str, Any] = torch.load(
         args.model, map_location=device, weights_only=True
     )
+    # get the config from the checkpoint 
     config = checkpoint["config"]
+    # determine number of classes based on the target
     target = config["target"]
     num_classes = 2 if target == "tumour" else 3
+    # define the model
     model = UNet3D(
         out_channels=num_classes, base_channels=int(config["base_channels"])
     ).to(device)
+    # load the model state dict from the checkpoint
     model.load_state_dict(checkpoint["state_dict"])
+    # get the patch size from the config 
     saved_patch_size = config["patch_size"]
+    # validate patch size is a list or tuple of length 3 (3 dimensions)
     if not isinstance(saved_patch_size, (list, tuple)) or len(saved_patch_size) != 3:
         raise ValueError("Model checkpoint must contain a three-dimensional patch size")
     patch_size = (
@@ -554,45 +586,53 @@ def predict(args: argparse.Namespace) -> None:
         int(saved_patch_size[1]),
         int(saved_patch_size[2]),
     )
+    # create the output directory if it doesn't exist
     args.out.mkdir(parents=True, exist_ok=True)
+    # get the class ids based on the target (tumour or multiclass)
     class_ids = (1,) if target == "tumour" else (1, 2)
+    # count the total dice score and case count for each class
     totals = {class_id: {"dice_sum": 0.0, "case_count": 0} for class_id in class_ids}
 
+    # get the case names for the specified split (train, val, test)
     case_names = splits[args.split]
 
+    # iterate over each case in the split and predict the segmentation
     for case_index, case_name in enumerate(case_names, start=1):
         if args.verbose:
             print(
                 f"Predicting case {case_index}/{len(case_names)}: {case_name}",
                 flush=True,
             )
-
+        # load the image and ground truth label for the case
         image, truth = _load_case(args.data, case_name, target)
 
         if args.verbose:
             print(f"  Image shape: {image.shape}", flush=True)
-        
+        # predict the segmentation for the case using the model and sliding window approach
         prediction = _predict_volume(
             model,
             image,
             patch_size,
-            args.overlap,
-            args.batch_size,
+            args.overlap, # use the overlap specified in the command line arguments
+            args.batch_size, # use the batch size specified in the command line arguments
             device,
         )
         if args.verbose:
             print(f"  Prediction complete: {prediction.shape}", flush=True)
-
+        # compute the dice score for each class and update the totals
         for class_id, score in _score_case(truth, prediction, target).items():
             if score is not None:
                 totals[class_id]["dice_sum"] += score
                 totals[class_id]["case_count"] += 1
+        # change labels for tumour target to match original label values (0 for background, 2 for tumour)
         if target == "tumour":
             prediction *= 2
+        # save the prediction as a compressed npz file in the output directory
         prediction_path = args.out / f"{case_name}.npz"
         np.savez_compressed(prediction_path, prediction=prediction)
         print(f"Predicted {case_name} -> {prediction_path}")
 
+    # print the mean foreground dice score across all cases in the split
     print(f"Mean per-case Dice on the {args.split} split:")
     _print_dice(totals, target)
 
