@@ -84,31 +84,79 @@ You can change `--target`, `--c`, `--max-iter`, `--samples-per-class`, `--sample
 
 ## Random forest
 
-The voxel-wise random forest uses the same preprocessed volumes and shared patient-level split as logistic regression. It extracts the same edge-padded 3x3x3 normalized CT intensity neighbourhood (27 features) and samples a balanced number of voxels from the training patients. It supports both three-class pancreas/tumour segmentation and tumour-versus-rest prediction.
+The random forest uses the same preprocessed volumes and shared patient-level split as logistic regression, but is trained as a two-stage model. Stage 1 classifies background versus pancreas (pancreas and tumour combined). Stage 2 classifies tumour versus non-tumour inside a dilation of the pancreas region. Stage 2 uses ground-truth pancreas masks while training and predicted Stage 1 masks during validation and test prediction, so validation and test results include Stage 1 errors. This protocol was developed from Farag et al. to better represent the features of the dataset using a hierarchichal approach.
 
 Install scikit-learn and joblib in the same environment as the preprocessing dependencies, then run:
 
 ```bash
 python models/random_forest.py train
+python models/random_forest.py tune
 python models/random_forest.py predict --split val
 ```
 
-Training saves `data/models/random_forest.joblib`; predictions and mean per-case Dice are written for labelled validation or test cases, using the same Dice convention as logistic regression. The default model is three-class. Use validation predictions to select settings, then evaluate the test split once after choices are fixed:
+Training saves both forests and their configuration in `data/models/random_forest.joblib`; predictions and mean per-case Dice are written for labelled validation or test cases, using the same Dice convention as logistic regression. Stage 2 is evaluated only in a dilation of the predicted Stage 1 mask, and the final output retains labels 0 (background), 1 (pancreas), and 2 (tumour). Use validation predictions to select settings, then evaluate the test split once after choices are fixed:
 
 ```bash
 python models/random_forest.py predict --split test
 ```
 
-The project baseline sets `n_estimators=200` (number of trees), `max_depth=20` (limits tree complexity), `min_samples_leaf=2` (discourages leaves based on a single voxel), and `max_features="sqrt"` (each split considers the square root of the 27 input features). It uses `class_weight="balanced_subsample"` to account for class imbalance within each bootstrap sample, `n_jobs=-1` to train trees in parallel, and seed 42 for reproducibility. Training samples at most 250 voxels per class per patient and 10,000 per class overall, making the three classes equally represented in the fit data. These are starting settings for this dataset and runtime, not clinically validated or guaranteed optimal settings.
+Instead of raw 3x3x3 intensity patches, each volume is transformed once into reusable channels: normalized intensity, Gaussian-smoothed intensity at sigma 1, 2, and 4, local mean and standard deviation with window sizes 5 and 9, gradient magnitude, Laplacian of Gaussian at sigma 1 and 2, and three normalized spatial coordinates. This gives both forests local intensity context, texture, edges, and a coarse anatomical position prior without recomputing filters for every voxel batch.
 
-You can change the target, tree count, depth, minimum leaf size, feature subset, sample caps, and seed with `--target`, `--n-estimators`, `--max-depth`, `--min-samples-leaf`, `--max-features`, `--samples-per-class`, `--samples-per-class-per-case`, and `--seed`. `--max-features` accepts `sqrt`, `log2`, or `all` (all 27 features). For example:
+The project baseline sets `n_estimators=200` (per stage), `max_depth=20`, `min_samples_leaf=2`, and `max_features="sqrt"`. Stage 1 samples five background voxels per pancreas voxel and uses no additional class weighting; Stage 2 samples balanced tumour/non-tumour voxels inside dilated ground-truth pancreas regions and uses `class_weight="balanced_subsample"`. Both forests use `n_jobs=-1` and seed 42. The Stage 1 foreground ratio is intentionally less extreme than the full-scan ratio, while exposing the forest to substantially more background than the previous balanced sampler.
+
+Training initializes conservative probability thresholds at 0.5. Run `tune` on the validation split after training to select separate Stage 1 and Stage 2 thresholds. Tuning also uses the largest connected Stage 1 component and stores the selected thresholds in the model artifact. Prediction uses those saved thresholds. The Stage 2 dilation supplies context, but tumour labels are emitted only inside the cleaned Stage 1 mask.
+
+You can change the tree count, depth, minimum leaf size, feature subset, class weights, sample caps, Stage 1 negative ratio, dilation size, minimum component size, and seed with `--n-estimators`, `--max-depth`, `--min-samples-leaf`, `--max-features`, `--stage1-class-weight`, `--stage2-class-weight`, `--samples-per-class`, `--samples-per-class-per-case`, `--stage1-negative-ratio`, `--dilation-iterations`, `--min-component-size`, and `--seed`. `--max-features` accepts `sqrt`, `log2`, or `all` (all 14 filter and position channels); class weights accept `none`, `balanced`, or `balanced_subsample`. For example:
 
 ```bash
 python models/random_forest.py train --n-estimators 300 --max-depth 24 --min-samples-leaf 3
-python models/random_forest.py train --target tumour
+python models/random_forest.py train --dilation-iterations 4
+python models/random_forest.py tune
 ```
 
-The exact model and sampling settings are stored in the model artifact. Keep preprocessing and the split unchanged for comparison; tune on validation data only and record selected settings before the single test evaluation.
+The exact model, feature, sampling, class-weight, dilation, component, and threshold settings are stored in the model artifact. Keep preprocessing and the split unchanged for comparison; tune on validation data only and record selected settings before the single test evaluation. The model remains a research baseline and is not clinically validated.
+
+### Random-forest experiments
+
+The repository includes a reproducible proxy-sweep workflow under `experiments/`. It is currently implemented for the random forest, but its run manifests and long-format metrics are intentionally model-neutral so equivalent logistic-regression and U-Net sweeps can be added later.
+
+First create a fixed proxy/confirmation split from the original validation patients:
+
+```bash
+python experiments/create_rf_proxy_split.py --seed 42 --proxy-cases 8
+```
+
+The generated `experiments/random_forest_proxy_split.json` keeps the original training patients, places eight complete validation volumes in `val` for proxy screening, and places the remaining validation volumes in `test` for confirmation. The `test` key in this experiment manifest is **not** the project's held-out test split. The real `data/processed/splits.json` must remain unchanged.
+
+Run one proxy sweep phase at a time:
+
+```bash
+python experiments/run_random_forest_sweep.py --phase trees
+python experiments/run_random_forest_sweep.py --phase depth-leaf
+python experiments/run_random_forest_sweep.py --phase max-features
+python experiments/run_random_forest_sweep.py --phase class-weight
+python experiments/run_random_forest_sweep.py --phase random-state
+```
+
+Each configuration trains on all manifest training patients, tunes thresholds on the proxy `val` patients, and evaluates both proxy `val` and confirmation `test` patients. Completed runs are skipped, so an interrupted phase can be resumed. Results and per-run manifests are written under `data/experiments/random_forest/`; the aggregate case-level file is `data/experiments/random_forest/case_metrics.csv`. The sweep currently tests:
+
+| Phase | Values |
+|---|---|
+| `trees` | 50, 100, 150, 200, 300 estimators |
+| `depth-leaf` | depths 10/15/20/25 × leaf sizes 1/2/4/8 |
+| `max-features` | `sqrt`, `log2`, `all` |
+| `class-weight` | Stage 1/Stage 2 combinations of `none`, `balanced`, and `balanced_subsample` |
+| `random-state` | 0, 1, 21, 42, 123, 999 |
+
+Generate tuning figures separately from the final model-comparison figures:
+
+```bash
+python experiments/plot_random_forest_sweeps.py
+```
+
+Figures are saved to `data/experiments/random_forest/figures/`. The existing `plot_results.py` is intentionally unchanged and remains reserved for the final logistic-regression/random-forest/U-Net comparison.
+
+The sweep calls `evaluate.py` with the experiment manifest and records Dice, precision, recall, truth voxels, predicted voxels, and intersection voxels. `evaluate.py` accepts the same custom `--splits`, `--predictions`, and `--out` options for these runs while retaining its normal `data/results/dice_per_case.csv` workflow. Select a configuration using proxy results, confirm it on the remaining validation patients, then retrain/tune the selected configuration using the full validation split before evaluating the real test split once.
 
 ## 3D U-Net
 

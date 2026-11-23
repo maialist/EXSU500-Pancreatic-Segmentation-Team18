@@ -32,6 +32,29 @@ def dice(truth: np.ndarray, prediction: np.ndarray) -> float:
     return 2.0 * int(np.logical_and(truth, prediction).sum()) / denominator
 
 
+def overlap_metrics(
+    truth: np.ndarray, prediction: np.ndarray
+) -> tuple[float, int, int, int, float, float]:
+    """Return Dice, voxel counts, intersection, precision, and recall."""
+    truth_voxels = int(truth.sum())
+    prediction_voxels = int(prediction.sum())
+    intersection = int(np.logical_and(truth, prediction).sum())
+    precision = (
+        float("nan")
+        if prediction_voxels == 0
+        else intersection / prediction_voxels
+    )
+    recall = float("nan") if truth_voxels == 0 else intersection / truth_voxels
+    return (
+        dice(truth, prediction),
+        truth_voxels,
+        prediction_voxels,
+        intersection,
+        precision,
+        recall,
+    )
+
+
 def evaluate(args: argparse.Namespace) -> list[dict]:
     with args.splits.open() as handle:
         splits = json.load(handle)
@@ -51,14 +74,19 @@ def evaluate(args: argparse.Namespace) -> list[dict]:
                     raise ValueError(f"Shape mismatch for {model}/{case}")
                 found += 1
                 for name, select in STRUCTURES.items():
+                    metrics = overlap_metrics(select(truth), select(prediction))
                     rows.append(
                         {
                             "model": model,
                             "split": split,
                             "case": case,
                             "structure": name,
-                            "dice": dice(select(truth), select(prediction)),
-                            "truth_voxels": int(select(truth).sum()),
+                            "dice": metrics[0],
+                            "truth_voxels": metrics[1],
+                            "prediction_voxels": metrics[2],
+                            "intersection_voxels": metrics[3],
+                            "precision": metrics[4],
+                            "recall": metrics[5],
                         }
                     )
             print(f"{model:14s} {split:5s}: {found}/{len(splits[split])} cases")

@@ -26,7 +26,7 @@ Medical Segmentation Decathlon Task07 Pancreas (portal-venous CT, Memorial Sloan
   3. Clip CT values to -100..240 HU (soft tissue) and scale to [0, 1].
   4. Save each case as `data/processed/<case>.npz` (`image` float16, `label` uint8).
   5. Write `data/processed/splits.json`, a seeded (42) 70/15/15 train/val/test split by patient, drawn from `imagesTr` because `imagesTs` has no labels.
-  6. `models/logistic_regression.py` implements logistic regression, `models/random_forest.py` a random forest, and `models/unet3d.py` a 3D U-Net.
+  6. `models/logistic_regression.py` implements logistic regression, `models/random_forest.py` a two-stage random forest, and `models/unet3d.py` a 3D U-Net.
 - [.gitignore](.gitignore) excludes raw data, `data/`, and `.nii`, `.nii.gz`, `.npz`, `.npy` files.
 
 Run it with `python preprocess.py` (use `--raw` to override the data path, `--limit N` for a quick test). Dependencies: `nibabel`, `numpy`, `scipy`. `load_case(path)` returns `(image float32, label uint8)` for one case.
@@ -37,5 +37,12 @@ Run it with `python preprocess.py` (use `--raw` to override the data path, `--li
 - Every model must use `splits.json`; do not create separate splits.
 - Do not change preprocessing parameters (spacing, HU window) without reprocessing and re-running all models.
 - Interpolate labels with nearest-neighbour only.
+- The random forest has two stages: Stage 1 segments pancreas (labels 1 and 2 versus background), and Stage 2 classifies tumour versus non-tumour inside a dilated pancreas region. Stage 2 training uses dilated ground-truth pancreas masks; validation and test prediction must use dilated predicted Stage 1 masks.
+- The random forest computes its 14 filter and position feature channels once per volume: normalized intensity, Gaussian scales 1/2/4, local mean and standard deviation at windows 5/9, gradient magnitude, Laplacian of Gaussian scales 1/2, and normalized coordinates. Do not reintroduce the old 27 raw-intensity neighbourhood unless the comparison protocol is intentionally changed.
+- The random forest Stage 1 sampler uses a configurable background-to-pancreas ratio (default 5:1) and no additional class weighting; Stage 2 remains balanced inside the dilated ROI. Run the validation-only `tune` command after training to select Stage 1 and Stage 2 probability thresholds. Prediction applies largest-component cleanup and emits tumour labels only within the cleaned Stage 1 mask.
+- Random-forest class weights are configurable independently for Stage 1 and Stage 2 through `--stage1-class-weight` and `--stage2-class-weight`; experiment sweeps must record those values in their run manifests.
+- The reproducible RF experiment workflow is in `experiments/create_rf_proxy_split.py`, `experiments/run_random_forest_sweep.py`, and `experiments/plot_random_forest_sweeps.py`. It trains on all training patients, screens on a fixed complete-volume validation proxy, confirms on the remaining validation patients, and must not use the real test split during selection.
+- `evaluate.py` is the shared case-level metric writer for final and experiment predictions. Experiment outputs may add metrics columns, but `plot_results.py` remains reserved for the final three-model comparison and should not be repurposed for hyperparameter sweep plots.
+- Keep experiment manifests, proxy case lists, parameter grids, random seeds, model settings, and source revision identifiers so a competent user can reproduce each run. Generated models, predictions, results, and figures belong under ignored `data/experiments/` and must not be committed.
 
 All three models use the same patient-level split. Tune using validation data and reserve the test split for final evaluation. The models are for research, not clinical decision-making.
