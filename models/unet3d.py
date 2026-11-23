@@ -441,6 +441,9 @@ def train(args: argparse.Namespace) -> None:
     # Begin training from specfied starting epoch to total epochs
     for epoch in range(start_epoch, args.epochs + 1):
     ##(new ends)
+        
+        print(f"Epoch {epoch}/{args.epochs}")
+
         model.train()
         # specify training data
         case_names = list(splits["train"]) 
