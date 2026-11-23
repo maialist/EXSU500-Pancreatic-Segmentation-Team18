@@ -9,6 +9,8 @@ import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
+# Original dataset labels; the offset grid defines the 27 input features per voxel.
+# Changing the grid changes the model inputs and requires retraining the forest.
 CLASS_IDS = (0, 1, 2)
 CLASS_NAMES = {0: "background", 1: "pancreas", 2: "tumour"}
 NEIGHBOUR_OFFSETS = tuple(
@@ -21,6 +23,7 @@ DEFAULT_DATA_DIR = Path("data/processed")
 DEFAULT_MODEL_PATH = Path("data/models/random_forest.joblib")
 
 
+# For the binary target, both background and pancreas become non-tumour (0).
 def target_labels(label: np.ndarray, target: str) -> np.ndarray:
     """Return labels for multiclass segmentation or tumour-vs-rest."""
     if target == "multiclass":
@@ -44,6 +47,7 @@ def extract_features(image: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
     ):
         raise ValueError("Voxel coordinates are outside the image bounds")
 
+    # Clipping repeats edge voxels when a neighbourhood extends outside the image.
     features = np.empty((len(coordinates), len(NEIGHBOUR_OFFSETS)), dtype=np.float32)
     for column, offset in enumerate(NEIGHBOUR_OFFSETS):
         indices = tuple(
@@ -62,6 +66,9 @@ def _sample_training_data(
     samples_per_class_per_case: int,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    # Sample up to the per-case limit for each class, then apply the overall
+    # per-class limit. Classes with fewer available voxels can remain smaller.
+    # Both limits and the random seed are configurable through the train command.
     rng = np.random.default_rng(seed)
     class_ids = (0, 1) if target == "tumour" else CLASS_IDS
     class_features: dict[int, list[np.ndarray]] = {class_id: [] for class_id in class_ids}
@@ -109,6 +116,7 @@ def _sample_training_data(
 
 
 def _load_splits(path: Path) -> dict[str, list[str]]:
+    # Read the shared patient split and reject missing, empty, or overlapping lists.
     with path.open(encoding="utf-8") as split_file:
         splits = json.load(split_file)
     required = ("train", "val", "test")
@@ -128,6 +136,8 @@ def _load_splits(path: Path) -> dict[str, list[str]]:
 def _predict_volume(
     classifier: RandomForestClassifier, image: np.ndarray, batch_size: int
 ) -> np.ndarray:
+    # Classify every voxel in batches to limit memory use; --batch-size controls
+    # the number of voxels processed at once, not the forest's predictions.
     prediction = np.empty(image.shape, dtype=np.uint8)
     flat_prediction = prediction.ravel()
     voxel_count = image.size
@@ -140,6 +150,7 @@ def _predict_volume(
 
 
 def train(args: argparse.Namespace) -> None:
+    # Fit only on patients in the shared training split.
     splits = _load_splits(args.splits)
     features, labels = _sample_training_data(
         args.data,
@@ -150,6 +161,9 @@ def train(args: argparse.Namespace) -> None:
         args.seed,
     )
     max_features = 1.0 if args.max_features == "all" else args.max_features
+    # Forest settings are CLI options except class_weight and n_jobs. The latter
+    # uses all available CPU cores; balanced_subsample weights each tree's classes
+    # according to its bootstrap sample. Changes here apply to the next training run.
     classifier = RandomForestClassifier(
         n_estimators=args.n_estimators,
         max_depth=args.max_depth,
@@ -161,6 +175,7 @@ def train(args: argparse.Namespace) -> None:
     )
     classifier.fit(features, labels)
 
+    # Save the fitted classifier, target, settings, and training patient IDs.
     args.model.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(
         {
@@ -193,6 +208,7 @@ def train(args: argparse.Namespace) -> None:
 
 
 def predict(args: argparse.Namespace) -> None:
+    # Load the saved model and evaluate a selected shared split.
     splits = _load_splits(args.splits)
     artifact = joblib.load(args.model)
     classifier: RandomForestClassifier = artifact["classifier"]
@@ -219,6 +235,8 @@ def predict(args: argparse.Namespace) -> None:
             )
         prediction = _predict_volume(classifier, image, args.batch_size)
 
+        # Per-case Dice is 2 * intersection / (truth size + prediction size).
+        # Cases with neither truth nor prediction for a class are excluded.
         for class_id, values in totals.items():
             truth_mask = truth == class_id
             prediction_mask = prediction == class_id
@@ -229,6 +247,7 @@ def predict(args: argparse.Namespace) -> None:
                 )
                 values["case_count"] += 1
 
+        # Map binary tumour predictions back to the dataset's tumour label (2).
         if target == "tumour":
             prediction *= 2
         prediction_path = args.out / f"{case_name}.npz"
@@ -247,9 +266,11 @@ def predict(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    # CLI settings can be changed per run without editing this file.
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
+    # Training paths: preprocessed cases, shared patient split, and output model.
     train_parser = commands.add_parser("train", help="fit and save the random forest")
     train_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
     train_parser.add_argument("--splits", type=Path, default=DEFAULT_DATA_DIR / "splits.json")
@@ -260,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="multiclass",
         help="segment background/pancreas/tumour or tumour versus everything else",
     )
+    # Forest parameters: number of trees, maximum tree depth, minimum samples
+    # per leaf, and number of features considered at each tree split.
     train_parser.add_argument("--n-estimators", type=int, default=200)
     train_parser.add_argument("--max-depth", type=int, default=20)
     train_parser.add_argument("--min-samples-leaf", type=int, default=2)
@@ -269,11 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
         default="sqrt",
         help="features considered per split; 'all' uses all 27 neighbourhood values",
     )
+    # Sampling caps control the maximum total and per-patient voxels per class;
+    # the seed controls both sampling and forest randomness.
     train_parser.add_argument("--samples-per-class", type=int, default=10_000)
     train_parser.add_argument("--samples-per-class-per-case", type=int, default=250)
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.set_defaults(func=train)
 
+    # Prediction paths and split are configurable; tune on val and reserve test
+    # for the final evaluation. Batch size controls prediction memory use.
     predict_parser = commands.add_parser(
         "predict", help="predict a labelled split and report mean per-case Dice"
     )
@@ -290,6 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # Validate positive numeric settings before dispatching the chosen command.
     args = build_parser().parse_args()
     if args.command == "train":
         if args.n_estimators <= 0 or args.max_depth <= 0 or args.min_samples_leaf <= 0:
