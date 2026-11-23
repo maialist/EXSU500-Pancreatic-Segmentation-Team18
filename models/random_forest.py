@@ -6,18 +6,14 @@ Protocol adjustments:
     * Stage 2 classifies tumour versus non-tumour only inside a dilated
       pancreas region. It is trained with dilated ground-truth pancreas masks
       and uses dilated Stage 1 predictions during validation and testing.
-    * The original 27 raw 3x3x3 intensity features are replaced by 14 channels
-      computed once per volume: the normalized intensity, Gaussian-smoothed
+    * The original 27 raw 3x3x3 intensity features (too simple -> predictions were poor)
+      are replaced by 14 channels computed once per volume: the normalized intensity, Gaussian-smoothed
       intensities, local means and standard deviations, gradient magnitude,
       Laplacian-of-Gaussian responses, and normalized spatial coordinates.
 
 This staged hierarchy is based on a similar pancreas-segmentation protocol
 described by Farag et al. (2014), which uses random forest models in a
-hierarchical segmentation approach. The present implementation adapts that
-idea to this project's preprocessed Medical Segmentation Decathlon Task07
-Pancreas data, shared patient-level split, labels, feature channels, and
-validation/test protocol. The model is a research baseline and is not
-clinically validated.
+hierarchical segmentation approach.
 """
 from __future__ import annotations
 
@@ -38,12 +34,13 @@ from scipy.ndimage import (
 from sklearn.ensemble import RandomForestClassifier
 
 CLASS_NAMES = {0: "background", 1: "pancreas", 2: "tumour"}
-# These fixed feature settings define the input protocol for both forests.
+# Fixed feature settings define the shared input protocol for both forests.
 GAUSSIAN_SIGMAS = (1.0, 2.0, 4.0)
 LOCAL_WINDOW_SIZES = (5, 9)
 DEFAULT_DILATION_ITERATIONS = 3
 DEFAULT_MIN_COMPONENT_SIZE = 100
 THRESHOLD_GRID = (0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98, 0.99)
+# Default locations for preprocessed cases and the serialized model artifact.
 DEFAULT_DATA_DIR = Path("data/processed")
 DEFAULT_MODEL_PATH = Path("data/models/random_forest.joblib")
 
@@ -85,6 +82,7 @@ def compute_feature_channels(image: np.ndarray) -> tuple[np.ndarray, ...]:
 def _features_at_coordinates(
     channels: tuple[np.ndarray, ...], coordinates: np.ndarray
 ) -> np.ndarray:
+    """Gather all feature channels at selected voxel coordinates."""
     # Convert volume channels into one feature row per requested voxel.
     if coordinates.ndim != 2 or coordinates.shape[1] != 3:
         raise ValueError("Coordinates must have shape (n_voxels, 3)")
@@ -100,11 +98,13 @@ def _features_at_coordinates(
 
 
 def _stage1_labels(label: np.ndarray) -> np.ndarray:
+    """Map pancreas and tumour labels to the Stage 1 foreground class."""
     # Stage 1 treats tumour as part of the pancreas foreground.
     return (label > 0).astype(np.uint8)
 
 
 def _stage2_labels(label: np.ndarray) -> np.ndarray:
+    """Map tumour labels to Stage 2 foreground, with other labels as background."""
     # Stage 2 separates tumour from all other voxels in its pancreas ROI.
     return (label == 2).astype(np.uint8)
 
@@ -119,7 +119,11 @@ def _sample_training_data(
     negative_ratio: int,
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Sample balanced rows for one stage, using ground-truth Stage 2 ROIs."""
+    """Build sampled feature rows and binary targets for one forest stage.
+
+    Stage 1 samples from the full volume. Stage 2 samples within a dilated
+    ground-truth pancreas region, retaining the non-tumour dilation shell.
+    """
     # Balanced sampling prevents the background or non-tumour class from
     # dominating the forest fit.
     rng = np.random.default_rng(seed)
@@ -189,6 +193,7 @@ def _sample_training_data(
 
 
 def _load_splits(path: Path) -> dict[str, list[str]]:
+    """Load and validate the shared, non-overlapping patient split."""
     # All models must use the same non-overlapping patient-level split.
     with path.open(encoding="utf-8") as split_file:
         splits = json.load(split_file)
@@ -212,6 +217,7 @@ def _fit_forest(
     labels: np.ndarray,
     class_weight: str | None,
 ):
+    """Fit one random forest using the common model hyperparameters."""
     # Both stages share the forest hyperparameters but receive different
     # targets, regions of interest, and class-weighting strategies.
     max_features = 1.0 if args.max_features == "all" else args.max_features
@@ -234,6 +240,7 @@ def _predict_probabilities(
     coordinates: np.ndarray,
     batch_size: int,
 ) -> np.ndarray:
+    """Predict foreground probabilities in batches to bound memory use."""
     # Batch probability calls to bound the temporary feature matrix size.
     probabilities = np.empty(len(coordinates), dtype=np.float32)
     for start in range(0, len(coordinates), batch_size):
@@ -245,7 +252,7 @@ def _predict_probabilities(
 
 
 def _largest_component(mask: np.ndarray, min_size: int) -> np.ndarray:
-    """Keep the largest connected foreground component above a size threshold."""
+    """Return the largest 3D foreground component if it meets the size limit."""
     components, count = connected_components(mask, structure=generate_binary_structure(3, 1))
     if count == 0:
         return np.zeros(mask.shape, dtype=bool)
@@ -264,6 +271,7 @@ def _predict_stage1(
     threshold: float,
     min_component_size: int,
 ) -> np.ndarray:
+    """Classify every voxel as pancreas foreground or background."""
     # Stage 1 classifies every voxel because it defines the Stage 2 ROI.
     coordinates = np.column_stack(np.unravel_index(np.arange(channels[0].size), channels[0].shape))
     probabilities = _predict_probabilities(classifier, channels, coordinates, batch_size)
@@ -281,6 +289,7 @@ def _predict_case(
     stage2_threshold: float,
     min_component_size: int,
 ) -> np.ndarray:
+    """Run both classifiers for one image and return labels 0, 1, or 2."""
     # Compute features once, use Stage 1 to define a dilated ROI, then let
     # Stage 2 add tumour labels within that ROI.
     channels = compute_feature_channels(image)
@@ -306,7 +315,7 @@ def _predict_case(
 
 
 def train(args: argparse.Namespace) -> None:
-    # Fit Stage 1 and Stage 2 only on the shared training patients.
+    """Train both forests on shared training cases and save a reproducible artifact."""
     splits = _load_splits(args.splits)
     stage1_features, stage1_labels = _sample_training_data(
         args.data, splits["train"], 1, args.samples_per_class,
@@ -371,6 +380,7 @@ def train(args: argparse.Namespace) -> None:
 
 
 def _dice(mask: np.ndarray, truth: np.ndarray) -> float:
+    """Calculate the Dice overlap for two boolean masks."""
     denominator = int(mask.sum() + truth.sum())
     if denominator == 0:
         return 1.0
@@ -383,7 +393,7 @@ def _validation_probabilities(
     case_names: list[str],
     batch_size: int,
 ) -> list[dict[str, np.ndarray]]:
-    """Compute reusable Stage 1 and Stage 2 validation probabilities."""
+    """Compute validation probabilities once so multiple thresholds can be tested."""
     results = []
     for case_name in case_names:
         case_path = data_dir / f"{case_name}.npz"
@@ -474,6 +484,7 @@ def tune(args: argparse.Namespace) -> None:
 
 
 def predict(args: argparse.Namespace) -> None:
+    """Predict a selected split, save case masks, and report mean per-case Dice."""
     # Validation and test inference intentionally use predicted, not
     # ground-truth, Stage 1 masks.
     splits = _load_splits(args.splits)
@@ -532,10 +543,10 @@ def predict(args: argparse.Namespace) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # Keep the original train/predict workflow while exposing the new
-    # two-stage dilation setting.
+    """Define the command-line interface for training, tuning, and prediction."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    # Training options configure sampling, the two forests, and postprocessing.
     train_parser = commands.add_parser("train", help="fit and save both random forests")
     train_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
     train_parser.add_argument("--splits", type=Path, default=DEFAULT_DATA_DIR / "splits.json")
@@ -575,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.set_defaults(func=train)
+    # Tuning uses validation probabilities and stores selected thresholds.
     tune_parser = commands.add_parser(
         "tune", help="select Stage 1 and Stage 2 thresholds on validation data"
     )
@@ -583,6 +595,7 @@ def build_parser() -> argparse.ArgumentParser:
     tune_parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
     tune_parser.add_argument("--batch-size", type=int, default=100_000)
     tune_parser.set_defaults(func=tune)
+    # Prediction loads the saved thresholds unless explicit overrides are given.
     predict_parser = commands.add_parser(
         "predict", help="predict a labelled split and report mean per-case Dice"
     )
@@ -599,8 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    # Reject invalid resource and morphology settings before training or
-    # prediction begins.
+    """Parse options, validate values, and dispatch to the requested command."""
     args = build_parser().parse_args()
     if args.command == "train":
         args.stage1_class_weight = (

@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 PHASES = ("trees", "depth-leaf", "max-features", "class-weight", "random-state")
+# Parameters held constant while a given sweep phase varies its target setting.
 BASE = {
     "n_estimators": 200,
     "max_depth": 20,
@@ -32,6 +33,7 @@ BASE = {
 
 
 def configurations(phase: str) -> list[dict]:
+    """Return the reproducible parameter combinations for one sweep phase."""
     if phase == "trees":
         return [{**BASE, "n_estimators": value} for value in (50, 100, 150, 200, 300)]
     if phase == "depth-leaf":
@@ -58,11 +60,13 @@ def configurations(phase: str) -> list[dict]:
 
 
 def run(command: list[str]) -> None:
+    """Print and execute a subprocess command, stopping if it fails."""
     print("$", " ".join(command), flush=True)
     subprocess.run(command, check=True)
 
 
 def train_arguments(config: dict) -> list[str]:
+    """Translate a run configuration into random_forest.py CLI arguments."""
     return [
         "--n-estimators", str(config["n_estimators"]),
         "--max-depth", str(config["max_depth"]),
@@ -78,6 +82,7 @@ def train_arguments(config: dict) -> list[str]:
 
 
 def collect_results(output_dir: Path) -> None:
+    """Combine per-run case metrics and manifest parameters into one CSV."""
     rows: list[dict] = []
     for metrics_path in sorted(output_dir.glob("*/metrics.csv")):
         run_dir = metrics_path.parent
@@ -101,6 +106,7 @@ def collect_results(output_dir: Path) -> None:
 
 
 def main() -> None:
+    """Train, tune, predict, and evaluate each configuration in the chosen sweep."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=PHASES, required=True)
     parser.add_argument(
@@ -127,6 +133,7 @@ def main() -> None:
     if args.max_runs is not None:
         configs = configs[: args.max_runs]
 
+    # Each run gets a manifest and isolated outputs so it can be resumed or audited.
     for config in configs:
         parameter_text = "_".join(
             f"{key}-{str(config[key]).replace('.', 'p')}"
@@ -156,6 +163,8 @@ def main() -> None:
             json.dump(manifest, handle, indent=2)
             handle.write("\n")
 
+        # Reuse the model CLI for every phase and evaluate proxy and confirmation
+        # predictions with the project's shared case-level metric writer.
         common = [
             sys.executable,
             str(script_root / "models/random_forest.py"),

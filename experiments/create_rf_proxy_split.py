@@ -14,6 +14,7 @@ import numpy as np
 
 
 def main() -> None:
+    """Split validation patients into deterministic proxy and confirmation groups."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--splits", type=Path, default=Path("data/processed/splits.json"))
     parser.add_argument(
@@ -25,6 +26,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    # Preserve the shared training and actual test sets; subdivide validation only.
     with args.splits.open(encoding="utf-8") as handle:
         source = json.load(handle)
     validation_cases = list(source["val"])
@@ -37,6 +39,7 @@ def main() -> None:
     )
     proxy = [case for case in validation_cases if case in selected]
     confirmation = [case for case in validation_cases if case not in selected]
+    # The experiment's "test" key means confirmation, not the held-out project test.
     manifest = {
         "train": list(source["train"]),
         "val": proxy,

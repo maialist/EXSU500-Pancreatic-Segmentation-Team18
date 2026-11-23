@@ -15,6 +15,7 @@ import numpy as np
 
 
 def load_rows(path: Path) -> list[dict]:
+    """Read sweep metrics and convert serialized parameters and Dice to native types."""
     with path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     for row in rows:
@@ -24,6 +25,7 @@ def load_rows(path: Path) -> list[dict]:
 
 
 def grouped(rows: list[dict], phase: str, split: str, structure: str) -> dict[str, list[float]]:
+    """Group pancreas-total Dice values by run for the requested sweep subset."""
     result: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         if row["phase"] == phase and row["split"] == split and row["structure"] == structure:
@@ -34,6 +36,7 @@ def grouped(rows: list[dict], phase: str, split: str, structure: str) -> dict[st
 def plot_phase(
     rows: list[dict], phase: str, parameter: str, out_dir: Path
 ) -> None:
+    """Save a phase-specific validation plot, using a heatmap for depth and leaf."""
     if phase == "depth-leaf":
         combinations: dict[tuple[int, int], list[float]] = defaultdict(list)
         for row in rows:
@@ -63,6 +66,7 @@ def plot_phase(
         fig.savefig(out_dir / "depth-leaf_pancreas_total_dice.png", dpi=200)
         plt.close(fig)
         return
+    # Other phases compare mean proxy Dice across runs, with case variation shown.
     runs = []
     for run_id, values in grouped(rows, phase, "val", "pancreas_total").items():
         row = next(item for item in rows if item["run_id"] == run_id)
@@ -98,6 +102,7 @@ def plot_phase(
 
 
 def plot_proxy_confirmation(rows: list[dict], out_dir: Path) -> None:
+    """Plot each run's mean proxy score against its confirmation score."""
     values: dict[str, dict[str, float]] = defaultdict(dict)
     for row in rows:
         if row["structure"] != "pancreas_total":
@@ -128,6 +133,7 @@ def plot_proxy_confirmation(rows: list[dict], out_dir: Path) -> None:
 
 
 def main() -> None:
+    """Load aggregated metrics and generate all sweep and confirmation figures."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--csv",
