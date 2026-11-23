@@ -56,12 +56,13 @@ The virtual environment itself is excluded by `.gitignore`; share the requiremen
 
 ## Logistic regression baseline
 
-The voxel-wise logistic-regression baseline uses the shared patient-level `train`/`val`/`test` split and preprocessed arrays. Each voxel is represented by its edge-padded 3x3x3 neighbourhood of normalized CT intensities (27 features), and each volume is predicted in batches. It supports three-class segmentation and tumour-versus-rest prediction.
+The voxel-wise logistic-regression baseline uses the shared patient-level `train`/`val`/`test` split and preprocessed arrays. Each voxel is represented by its edge-padded 3x3x3 neighbourhood of normalized CT intensities (27 features) plus 6 context features (a log spatial atlas prior built from training labels in normalised coordinates, Gaussian-smoothed intensities at four scales, and local standard deviation). Training samples hard negatives near the organs; `tune` (validation only) then picks per-class probability thresholds and largest-component post-processing, which `predict` applies. These features differ from the random forest and U-Net inputs. Run `train`, `tune`, then `predict`. It supports three-class segmentation and tumour-versus-rest prediction.
 
 Run training and validation prediction from the repository root:
 
 ```bash
 python models/logistic_regression.py train
+python models/logistic_regression.py tune
 python models/logistic_regression.py predict --split val
 ```
 
