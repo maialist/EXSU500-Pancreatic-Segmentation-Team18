@@ -442,7 +442,10 @@ def train(args: argparse.Namespace) -> None:
                 print([x.dtype if torch.is_tensor(x) else None
                     for x in checkpoint["cuda_rng_state"]])
                         
-            torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+            cuda_rng_state = [
+                state.cpu() for state in checkpoint["cuda_rng_state"]
+            ]
+            torch.cuda.set_rng_state_all(cuda_rng_state)
 
         print(f"Resuming from epoch {start_epoch}")
 
