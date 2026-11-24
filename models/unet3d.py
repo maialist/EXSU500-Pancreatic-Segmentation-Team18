@@ -434,13 +434,6 @@ def train(args: argparse.Namespace) -> None:
             torch.cuda.is_available()
             and checkpoint["cuda_rng_state"] is not None
         ):
-            print(type(checkpoint["cuda_rng_state"]))
-            print(checkpoint["cuda_rng_state"])
-
-            if isinstance(checkpoint["cuda_rng_state"], (list, tuple)):
-                print([type(x) for x in checkpoint["cuda_rng_state"]])
-                print([x.dtype if torch.is_tensor(x) else None
-                    for x in checkpoint["cuda_rng_state"]])
                         
             cuda_rng_state = [
                 state.cpu() for state in checkpoint["cuda_rng_state"]
