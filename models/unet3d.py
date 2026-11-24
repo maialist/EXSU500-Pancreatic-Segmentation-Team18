@@ -434,6 +434,14 @@ def train(args: argparse.Namespace) -> None:
             torch.cuda.is_available()
             and checkpoint["cuda_rng_state"] is not None
         ):
+            print(type(checkpoint["cuda_rng_state"]))
+            print(checkpoint["cuda_rng_state"])
+
+            if isinstance(checkpoint["cuda_rng_state"], (list, tuple)):
+                print([type(x) for x in checkpoint["cuda_rng_state"]])
+                print([x.dtype if torch.is_tensor(x) else None
+                    for x in checkpoint["cuda_rng_state"]])
+                        
             torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
 
         print(f"Resuming from epoch {start_epoch}")
@@ -442,8 +450,6 @@ def train(args: argparse.Namespace) -> None:
     for epoch in range(start_epoch, args.epochs + 1):
     ##(new ends)
         
-        print(f"Epoch {epoch}/{args.epochs}")
-
         model.train()
         # specify training data
         case_names = list(splits["train"]) 
