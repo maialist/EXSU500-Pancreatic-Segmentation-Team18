@@ -15,7 +15,7 @@ from torch import nn
 CLASS_IDS = (0, 1, 2)
 CLASS_NAMES = {0: "background", 1: "pancreas", 2: "tumour"}
 DEFAULT_DATA_DIR = Path("data/processed")
-DEFAULT_MODEL_PATH = Path("data/models/unet3d.pt")
+DEFAULT_MODEL_PATH = Path("data/models/unet3d.pt") 
 DEFAULT_CHECKPOINT_PATH = Path("data/models/unet3d_training.pt") # default for checkpoint path
 DEFAULT_PATCH_SIZE = (64, 64, 32)
 NUM_DOWNSAMPLINGS = 3
@@ -646,6 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 
+    # training args
     train_parser = commands.add_parser("train", help="train and save the 3D U-Net")
     train_parser.add_argument("--data", type=Path, default=DEFAULT_DATA_DIR)
     train_parser.add_argument("--splits", type=Path, default=DEFAULT_DATA_DIR / "splits.json")
@@ -691,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.set_defaults(func=train)
 
+    # prediction args
     predict_parser = commands.add_parser(
         "predict", help="predict a labelled split and report per-case Dice"
     )
